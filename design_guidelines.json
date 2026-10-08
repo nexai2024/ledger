@@ -1,0 +1,168 @@
+{
+  "project_name": "LedgerSync",
+  "archetype": "THE PERFORMANCE PRO / SWISS HIGH-CONTRAST TECH",
+  "theme": "hybrid (Dark obsidian dashboard mode + crisp high-trust public checkout mode with light/dark toggle)",
+  "emotional_tone": "Institutional trust, Web3 native precision, sub-cent gas efficiency, real-time auditability",
+  "typography": {
+    "font_pairing": "Swiss Brutalist Tech & Utility",
+    "headings": {
+      "family": "Plus Jakarta Sans, Space Grotesk, sans-serif",
+      "weights": ["font-bold", "font-extrabold"],
+      "tracking": "tracking-tight",
+      "h1_max_size": "text-4xl sm:text-5xl lg:text-5xl",
+      "h2_size": "text-2xl sm:text-3xl lg:text-4xl",
+      "h3_size": "text-xl sm:text-2xl"
+    },
+    "body": {
+      "family": "Inter, system-ui, sans-serif",
+      "weights": ["font-normal", "font-medium"],
+      "leading": "leading-relaxed"
+    },
+    "mono": {
+      "family": "JetBrains Mono, Source Code Pro, monospace",
+      "usage": "Tx hashes, nonces, Base wallet addresses, gas fees, USDC amounts, ERP webhook payload logs"
+    }
+  },
+  "colors": {
+    "base_brand": {
+      "base_blue": "#0052FF",
+      "base_blue_hover": "#0045D8",
+      "base_blue_glow": "rgba(0, 82, 255, 0.25)"
+    },
+    "surface": {
+      "dark": {
+        "bg_root": "#0B0F17",
+        "card_bg": "#111827",
+        "card_border": "rgba(255, 255, 255, 0.08)",
+        "hover_bg": "#1F2937",
+        "text_primary": "#F9FAFB",
+        "text_secondary": "#9CA3AF"
+      },
+      "light": {
+        "bg_root": "#F8FAFC",
+        "card_bg": "#FFFFFF",
+        "card_border": "rgba(0, 0, 0, 0.08)",
+        "hover_bg": "#F1F5F9",
+        "text_primary": "#0F172A",
+        "text_secondary": "#475569"
+      }
+    },
+    "status_badges": {
+      "paid_synced": {
+        "bg": "rgba(16, 185, 129, 0.12)",
+        "text": "#10B981",
+        "border": "rgba(16, 185, 129, 0.3)",
+        "label": "PAID / SYNCED"
+      },
+      "pending_unconfirmed": {
+        "bg": "rgba(245, 158, 11, 0.12)",
+        "text": "#F59E0B",
+        "border": "rgba(245, 158, 11, 0.3)",
+        "label": "PENDING / LISTENING"
+      },
+      "failed_error": {
+        "bg": "rgba(239, 68, 68, 0.12)",
+        "text": "#EF4444",
+        "border": "rgba(239, 68, 68, 0.3)",
+        "label": "FAILED / SYNC ERROR"
+      }
+    }
+  },
+  "layout_and_spacing": {
+    "dashboard_grid": "MODE B: High Density Grid (4-col desktop, 2-col tablet, 1-col mobile)",
+    "checkout_page": "Centering with asymmetric summary panel, high contrast action card, explicit state steps",
+    "container_padding": "Internal padding p-6 or p-8 to prevent text collisions with borders",
+    "grid_gap": "gap-4 to gap-6 for dashboards; gap-8 for public checkout engine"
+  },
+  "core_modules": [
+    {
+      "module_id": "checkout_engine",
+      "name": "The Public Checkout Engine",
+      "route": "/checkout/:nonce or /pay/:nonce",
+      "key_elements": [
+        "Base Wallet Connector button (Mocked/Connected status badge with address ellipsis 0x...8F2a)",
+        "USDC Invoice summary card (Item name, Subtotal, Base gas fee estimated <$0.01, Total in USDC)",
+        "Nonce verification badge",
+        "One-click Pay USDC button with dynamic status transitions (Connecting -> Tx Broadcasting -> Base Confirmation -> Reconciled Toast)",
+        "Instant transaction link to BaseScan Explorer (mock link with actual tx hash)"
+      ]
+    },
+    {
+      "module_id": "onchain_listener",
+      "name": "The Onchain Listener & Verification Center",
+      "route": "Integrated background simulation & Real-time Live Feed in Founder Dashboard",
+      "key_elements": [
+        "Base network block height indicator",
+        "Live WebSocket/polling event pulse (USDC contract transfer events on Base Mainnet/Sepolia)",
+        "Automatic invoice nonce matching indicator with latency badge (e.g., 420ms reconciliation speed)"
+      ]
+    },
+    {
+      "module_id": "erp_sync_engine",
+      "name": "The ERP Sync Webhook Engine (QuickBooks / Xero)",
+      "route": "/dashboard/erp-sync",
+      "key_elements": [
+        "ERP Provider status toggle (QuickBooks Online vs Xero vs Custom Webhook)",
+        "Live Sync Status logs table (Invoice ID, Onchain Tx, ERP Journal Entry ID, Sync Timestamp, Retry button)",
+        "Payload inspector drawer/modal for developer founders to inspect raw Web2 accounting JSON"
+      ]
+    },
+    {
+      "module_id": "founder_dashboard",
+      "name": "The Founder SaaS Command Center",
+      "route": "/dashboard",
+      "key_elements": [
+        "Hero MRR & ARR stat cards with percentage growth sparklines",
+        "Active Subscriptions overview card with Base USDC recurring stream indicators",
+        "Payment History data table with sorting, filtering by payment status (PENDING/PAID/FAILED), search by Tx/Customer",
+        "Quick link generator modal to craft shareable USDC checkout URLs with custom amount, customer email, and ERP product ID"
+      ]
+    }
+  ],
+  "component_guidelines": {
+    "shadcn_usage": "Use customized Shadcn UI for Dialog, DropdownMenu, Tabs, Select, Switch, Table, Sheet, Sonner toast, Badge, Card",
+    "card_borders": "1px solid border-border with subtle hover transform (-translate-y-0.5) and glow border focus",
+    "data_tables": "Sticky header, pagination controls, clear copy-to-clipboard for Base hashes, status badge pill components",
+    "toast_notifications": "Use Sonner for payment state changes, wallet connections, invoice link copying, and ERP sync triggers"
+  },
+  "image_urls": [
+    {
+      "category": "founder_avatars",
+      "url": "https://images.unsplash.com/photo-1568658176307-bfbd2873abda?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTF8MHwxfHNlYXJjaHwzfHxmaW50ZWNoJTIwU2FhUyUyMGRhc2hib2FyZCUyMHRlY2glMjBmb3VuZGVyc3xlbnwwfHx8fDE3OTE0NzIwODd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Founders reviewing financial metrics on MacBook"
+    },
+    {
+      "category": "team_workspace",
+      "url": "https://images.unsplash.com/photo-1556761175-b413da4baf72?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTF8MHwxfHNlYXJjaHwxfHxmaW50ZWNoJTIwU2FhUyUyMGRhc2hib2FyZCUyMHRlY2glMjBmb3VuZGVyc3xlbnwwfHx8fDE3OTE0NzIwODd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Tech founders collaboration setup"
+    }
+  ],
+  "testing_requirements": {
+    "data_testid_convention": "kebab-case, role-based naming for all interactive controls and status data fields",
+    "mandatory_ids": [
+      "data-testid=\"founder-login-button\"",
+      "data-testid=\"create-checkout-link-button\"",
+      "data-testid=\"checkout-connect-wallet-button\"",
+      "data-testid=\"checkout-pay-usdc-button\"",
+      "data-testid=\"tx-status-badge\"",
+      "data-testid=\"erp-sync-status-badge\"",
+      "data-testid=\"mrr-value-display\"",
+      "data-testid=\"erp-provider-select\"",
+      "data-testid=\"invoice-nonce-input\""
+    ]
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You tend to converge toward generic, on distribution outputs. In frontend design, this creates what users call the AI slop aesthetic. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur) on floating navbars or sticky header toolbars.",
+    "You MUST NOT apply universal transition (e.g. transition: all). Always add transitions for specific interactive elements like button, input excluding transforms.",
+    "You MUST NOT center align the app container, ie do not add .App { text-align: center; } in the css file.",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style.",
+    "NEVER use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯 for icons. Use lucide-react icons exclusively.",
+    "Every interaction needs micro-animations - hover states, transitions, parallax effects, and entrance animations. Static = dead.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "All interactive and key informational elements MUST include a data-testid attribute to facilitate robust automated testing."
+  ]
+}
