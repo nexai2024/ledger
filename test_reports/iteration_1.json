@@ -1,0 +1,39 @@
+{
+  "summary": "Full stack testing of LedgerSync. Backend: 18/18 pytest tests passing (auth, dashboard, CRUD, checkout, listener, ERP, settings). Frontend: smoke-tested all 7 dashboard nav pages, login (no redirect-race), create checkout link flow, logout, public /pay/<nonce> page without auth, Google button on login, forgot-password page. No critical bugs found.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard Overview", "issues": ["Recharts emits width(-1)/height(-1) warnings when the chart container renders before layout settles — purely cosmetic console noise, chart still renders"]},
+      {"screen": "CreateInvoiceDialog & other Radix Dialogs", "issues": ["Missing aria-describedby / DialogDescription — accessibility warning in console (not user-visible)"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_ledgersync_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Add DialogDescription or aria-describedby to Radix DialogContent components to clear a11y warnings",
+    "(Optional) Backend PUT /api/subscriptions/{sid} currently requires full SubscriptionIn (customerId+productId); the frontend accommodates this, but a status-only PATCH would be cleaner",
+    "(Optional) /api/dashboard/stats returns totalCollected (not collectedUsdc as referenced in the review request wording) — frontend uses the actual field, so this is a doc mismatch only"
+  ],
+  "critical_code_review_comments": [
+    "AuthContext race-fix (setUser((prev) => prev ? prev : false)) correctly prevents the login→/login bounce; verified end-to-end",
+    "Login/Register/Forgot-password all use httpOnly cookies with SameSite=None; Secure — observed in response headers",
+    "Forgot-password returns identical generic body for registered vs unregistered emails (verified via test); reset tokens are stored as sha256 hashes (verified in server.py)",
+    "/api/checkout/{nonce} is correctly public (no auth dependency); /confirm validates txHash regex (0x + 64 hex) before any RPC call — good defense in depth",
+    "server.py is 909 lines in a single file — above the 700-line threshold; recommend splitting into routers/ (auth, invoices, listener, erp)",
+    "run_erp_sync is clearly flagged as MOCKED per request"
+  ],
+  "updated_files": [
+    "/app/backend/tests/__init__.py (new)",
+    "/app/backend/tests/test_ledgersync_backend.py (new)"
+  ],
+  "success_rate": { "backend": "100% (18/18)", "frontend": "100% of smoke flows" },
+  "test_credentials": "nexai.coach@gmail.com / LedgerSync2026! (from /app/memory/test_credentials.md) — valid, pre-seeded with demo data",
+  "seed_data_creation": "Tests create TEST_-prefixed customers/products/subscriptions and delete them in-test. One test-created invoice (ls_P6pP6a4CeOCzpw, $12.34, PENDING) was left behind during Playwright run and is harmless. The Settings persistence test overwrote the founder's companyName with a TestCo-XXXXX value and baseWalletAddr with 0xbbb...bbb — main agent may want to re-seed if demo polish matters.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest file at /app/backend/tests/test_ledgersync_backend.py — run with `pytest backend/tests/test_ledgersync_backend.py -v -o addopts=''` (project pytest.ini forces xdist, which can create session-fixture races on the shared founder account; serial run is reliable). Public checkout page is at /pay/<nonce>; nonce format `ls_...`. Founder settings may now show TestCo-XXXXX company name and 0xbbb...bbb wallet — reseed if needed."
+}
