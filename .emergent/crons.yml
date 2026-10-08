@@ -1,0 +1,8 @@
+crons:
+  - name: bill-subscriptions
+    description: "Auto-bills active subscriptions due now by creating pending USDC invoices"
+    cron: "0 * * * *"
+    endpoint: "{{BASE_URL}}/api/cron/bill-subscriptions"
+    method: POST
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    enabled: true

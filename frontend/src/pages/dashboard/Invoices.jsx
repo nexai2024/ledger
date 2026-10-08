@@ -13,7 +13,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { FileText, ExternalLink, Search, Link2 } from "lucide-react";
+import { FileText, ExternalLink, Search, Link2, Download } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Invoices() {
@@ -42,6 +42,23 @@ export default function Invoices() {
     toast.success("Checkout link copied");
   };
 
+  const exportCsv = async () => {
+    try {
+      const res = await api.get("/exports/payments.csv", { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "ledgersync-payments.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Exported payment history");
+    } catch {
+      toast.error("Export failed");
+    }
+  };
+
   return (
     <div className="ls-fade-up">
       <PageHeader title="Invoices" subtitle="Every USDC checkout and its onchain + ERP status." testid="invoices-heading">
@@ -63,6 +80,9 @@ export default function Invoices() {
             <SelectItem value="FAILED">Failed</SelectItem>
           </SelectContent>
         </Select>
+        <Button variant="outline" onClick={exportCsv} className="gap-2 rounded-full" data-testid="export-csv-button">
+          <Download className="h-4 w-4" /> Export CSV
+        </Button>
       </div>
 
       {!isLoading && filtered.length === 0 ? (

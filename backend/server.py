@@ -6,6 +6,8 @@ load_dotenv(ROOT_DIR / '.env')
 
 import os
 import re
+import io
+import csv
 import json
 import uuid
 import hmac
@@ -21,7 +23,10 @@ from typing import Optional, List
 import bcrypt
 import jwt
 import httpx
+import base64
+from cryptography.fernet import Fernet
 from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends, BackgroundTasks
+from fastapi.responses import RedirectResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
@@ -51,6 +56,43 @@ BASE_CHAIN_ID = int(os.environ.get("BASE_CHAIN_ID", "8453"))
 USDC_CONTRACT = os.environ.get("USDC_CONTRACT", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913").lower()
 USDC_DECIMALS = 6
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+WEBHOOK_CRON_SECRET = os.environ.get("WEBHOOK_CRON_SECRET", "")
+
+# ERP (QuickBooks / Xero) OAuth2 — real accounting connection
+from urllib.parse import urlencode
+APP_BASE_URL = os.environ.get("APP_BASE_URL", FRONTEND_URL).rstrip("/")
+QBO_CLIENT_ID = os.environ.get("QBO_CLIENT_ID", "")
+QBO_CLIENT_SECRET = os.environ.get("QBO_CLIENT_SECRET", "")
+QBO_ENV = os.environ.get("QBO_ENV", "sandbox")
+QBO_REDIRECT_URI = os.environ.get("QBO_REDIRECT_URI", f"{APP_BASE_URL}/api/accounting/qbo/callback")
+XERO_CLIENT_ID = os.environ.get("XERO_CLIENT_ID", "")
+XERO_CLIENT_SECRET = os.environ.get("XERO_CLIENT_SECRET", "")
+XERO_REDIRECT_URI = os.environ.get("XERO_REDIRECT_URI", f"{APP_BASE_URL}/api/accounting/xero/callback")
+_TOKEN_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY", "")
+_fernet = Fernet(_TOKEN_KEY.encode()) if _TOKEN_KEY else None
+
+QBO_AUTH_URL = "https://appcenter.intuit.com/connect/oauth2"
+QBO_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+QBO_API_BASE = "https://sandbox-quickbooks.api.intuit.com" if QBO_ENV == "sandbox" else "https://quickbooks.api.intuit.com"
+XERO_AUTH_URL = "https://login.xero.com/identity/connect/authorize"
+XERO_TOKEN_URL = "https://identity.xero.com/connect/token"
+
+PROVIDER_LABEL = {"qbo": "QUICKBOOKS", "xero": "XERO"}
+PROVIDER_KEY = {"QUICKBOOKS": "qbo", "XERO": "xero"}
+
+def _enc(v: str) -> str:
+    return _fernet.encrypt(v.encode()).decode() if _fernet else v
+
+def _dec(v: str) -> str:
+    return _fernet.decrypt(v.encode()).decode() if _fernet else v
+
+def erp_configured(provider_key: str) -> bool:
+    if provider_key == "qbo":
+        return bool(QBO_CLIENT_ID and QBO_CLIENT_SECRET)
+    if provider_key == "xero":
+        return bool(XERO_CLIENT_ID and XERO_CLIENT_SECRET)
+    return False
 
 app = FastAPI(title="LedgerSync API")
 api = APIRouter(prefix="/api")
@@ -242,10 +284,64 @@ async def verify_usdc_transfer(tx_hash: str, to_addr: str, min_micros: int) -> d
 # ERP sync engine (mocked QuickBooks / Xero)
 # ---------------------------------------------------------------------------
 
+async def erp_token(founder_id: str, provider_key: str):
+    conn = await db.erp_connections.find_one({"founderId": founder_id, "provider": provider_key}, {"_id": 0})
+    if not conn:
+        return None
+    exp = datetime.fromisoformat(conn["access_expires"])
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp > datetime.now(timezone.utc) + timedelta(seconds=30):
+        return conn
+    token_url, cid, secret = (QBO_TOKEN_URL, QBO_CLIENT_ID, QBO_CLIENT_SECRET) if provider_key == "qbo" else (XERO_TOKEN_URL, XERO_CLIENT_ID, XERO_CLIENT_SECRET)
+    basic = base64.b64encode(f"{cid}:{secret}".encode()).decode()
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.post(token_url, data={"grant_type": "refresh_token", "refresh_token": _dec(conn["refresh_token"])},
+                         headers={"Authorization": "Basic " + basic, "Accept": "application/json"})
+    r.raise_for_status()
+    t = r.json()
+    upd = {"access_token": _enc(t["access_token"]),
+           "refresh_token": _enc(t.get("refresh_token", _dec(conn["refresh_token"]))),
+           "access_expires": (datetime.now(timezone.utc) + timedelta(seconds=t.get("expires_in", 3600))).isoformat()}
+    await db.erp_connections.update_one({"founderId": founder_id, "provider": provider_key}, {"$set": upd})
+    conn.update(upd)
+    return conn
+
+async def erp_push_real(conn: dict, provider_key: str, invoice: dict, customer: dict):
+    access = _dec(conn["access_token"])
+    amount = float(invoice["amountUsdc"])
+    desc = invoice.get("description", "USDC payment")
+    if provider_key == "qbo":
+        payload = {"Line": [{"Amount": amount, "DetailType": "SalesItemLineDetail", "Description": desc,
+                             "SalesItemLineDetail": {"ItemRef": {"value": "1"}, "Qty": 1, "UnitPrice": amount}}],
+                   "CustomerRef": {"value": "1"}}
+        url = f"{QBO_API_BASE}/v3/company/{conn['realm_id']}/salesreceipt?requestid={invoice['paymentNonce'][:50]}&minorversion=65"
+        headers = {"Authorization": "Bearer " + access, "Accept": "application/json", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=25) as c:
+            r = await c.post(url, json=payload, headers=headers)
+        if r.status_code >= 400:
+            raise RuntimeError(f"QBO {r.status_code}: {r.text[:300]}")
+        res = r.json()
+        return str(res.get("SalesReceipt", {}).get("Id", "")) or "QBO", res
+    payload = {"Invoices": [{"Type": "ACCREC",
+                "Contact": {"Name": (customer or {}).get("name") or (customer or {}).get("email", "Customer")},
+                "LineItems": [{"Description": desc, "Quantity": 1, "UnitAmount": amount, "AccountCode": "200"}],
+                "Status": "AUTHORISED", "Reference": invoice["paymentNonce"]}]}
+    headers = {"Authorization": "Bearer " + access, "Xero-tenant-id": conn["tenant_id"],
+               "Accept": "application/json", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=25) as c:
+        r = await c.post("https://api.xero.com/api.xro/2.0/Invoices", json=payload, headers=headers)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Xero {r.status_code}: {r.text[:300]}")
+    res = r.json()
+    return res.get("Invoices", [{}])[0].get("InvoiceID", "XERO"), res
+
 async def run_erp_sync(invoice: dict, founder: dict) -> dict:
     provider = founder.get("erpProvider")
     now = datetime.now(timezone.utc)
     customer = await db.customers.find_one({"id": invoice["customerId"]}, {"_id": 0})
+    pkey = PROVIDER_KEY.get(provider) if provider else None
+    conn = await erp_token(founder["user_id"], pkey) if (pkey and erp_configured(pkey)) else None
     payload = {
         "docType": "SalesReceipt",
         "customerRef": {"name": (customer or {}).get("name") or (customer or {}).get("email", "Unknown")},
@@ -256,22 +352,35 @@ async def run_erp_sync(invoice: dict, founder: dict) -> dict:
         "paymentNonce": invoice["paymentNonce"],
         "txnDate": now.date().isoformat(),
     }
-    if not provider:
+    mode = "mock"
+    if conn:
+        mode = "live"
+        try:
+            erp_id, _raw = await erp_push_real(conn, pkey, invoice, customer)
+            result = {"erpSyncStatus": "SYNCED", "erpInvoiceId": str(erp_id),
+                      "erpSyncLog": json.dumps({"provider": provider, "mode": "live", "status": "success",
+                                                "erpInvoiceId": str(erp_id), "payload": payload, "syncedAt": now.isoformat()})}
+            msg = f"Live {provider} sync — entry {erp_id}"
+        except Exception as e:
+            result = {"erpSyncStatus": "ERROR", "erpInvoiceId": None,
+                      "erpSyncLog": json.dumps({"provider": provider, "mode": "live", "error": str(e), "payload": payload})}
+            msg = f"Live {provider} sync failed: {e}"
+    elif not provider:
         result = {"erpSyncStatus": "ERROR", "erpInvoiceId": None,
                   "erpSyncLog": json.dumps({"error": "No ERP provider configured", "payload": payload})}
+        msg = "No ERP provider configured"
     else:
         erp_id = f"{'QBO' if provider == 'QUICKBOOKS' else 'XERO'}-{secrets.token_hex(4).upper()}"
         result = {"erpSyncStatus": "SYNCED", "erpInvoiceId": erp_id,
-                  "erpSyncLog": json.dumps({"provider": provider, "status": "success",
-                                            "journalEntryId": erp_id, "payload": payload,
-                                            "syncedAt": now.isoformat()})}
+                  "erpSyncLog": json.dumps({"provider": provider, "mode": "mock", "status": "success",
+                                            "journalEntryId": erp_id, "payload": payload, "syncedAt": now.isoformat()})}
+        msg = "Reconciled invoice pushed to ERP (mock)"
     await db.invoices.update_one({"id": invoice["id"]}, {"$set": {**result, "updatedAt": now.isoformat()}})
     await db.erp_sync_logs.insert_one({
         "id": str(uuid.uuid4()), "founderId": founder["user_id"], "invoiceId": invoice["id"],
-        "provider": provider or "NONE", "status": result["erpSyncStatus"],
+        "provider": provider or "NONE", "status": result["erpSyncStatus"], "mode": mode,
         "erpInvoiceId": result["erpInvoiceId"], "onchainTxHash": invoice.get("onchainTxHash"),
-        "payload": payload, "message": "Reconciled invoice pushed to ERP" if provider else "No ERP provider configured",
-        "ts": now.isoformat(),
+        "payload": payload, "message": msg, "ts": now.isoformat(),
     })
     return result
 
@@ -793,6 +902,187 @@ async def dashboard_stats(founder: dict = Depends(get_current_founder)):
         "syncedCount": synced, "customerCount": await db.customers.count_documents({"founderId": fid}),
         "revenueTrend": trend,
     }
+
+# ---------------------------------------------------------------------------
+# ERP (QuickBooks / Xero) OAuth connect + callbacks
+# ---------------------------------------------------------------------------
+
+async def _consume_state(state: str, provider_key: str) -> str:
+    s = await db.oauth_states.find_one_and_delete({"state": state, "provider": provider_key})
+    if not s:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    exp = datetime.fromisoformat(s["expires"])
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="OAuth state expired")
+    return s["founderId"]
+
+@api.get("/accounting/status")
+async def accounting_status(founder: dict = Depends(get_current_founder)):
+    out = {}
+    for pk in ("qbo", "xero"):
+        conn = await db.erp_connections.find_one({"founderId": founder["user_id"], "provider": pk}, {"_id": 0})
+        out[pk] = {"configured": erp_configured(pk), "connected": bool(conn), "label": PROVIDER_LABEL[pk],
+                   "env": QBO_ENV if pk == "qbo" else "oauth",
+                   "realmId": (conn or {}).get("realm_id"), "tenantId": (conn or {}).get("tenant_id"),
+                   "connectedAt": (conn or {}).get("connected_at")}
+    return out
+
+@api.get("/accounting/{provider}/connect")
+async def accounting_connect(provider: str, founder: dict = Depends(get_current_founder)):
+    if provider not in ("qbo", "xero"):
+        raise HTTPException(status_code=400, detail="Unknown provider")
+    if not erp_configured(provider):
+        raise HTTPException(status_code=400, detail=f"{PROVIDER_LABEL[provider]} credentials are not configured on the server yet")
+    state = secrets.token_urlsafe(32)
+    await db.oauth_states.insert_one({"state": state, "founderId": founder["user_id"], "provider": provider,
+                                      "expires": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()})
+    if provider == "qbo":
+        params = {"client_id": QBO_CLIENT_ID, "response_type": "code",
+                  "scope": "com.intuit.quickbooks.accounting", "redirect_uri": QBO_REDIRECT_URI, "state": state}
+        return {"authUrl": QBO_AUTH_URL + "?" + urlencode(params)}
+    params = {"client_id": XERO_CLIENT_ID, "response_type": "code",
+              "scope": "openid profile email offline_access accounting.transactions accounting.settings",
+              "redirect_uri": XERO_REDIRECT_URI, "state": state}
+    return {"authUrl": XERO_AUTH_URL + "?" + urlencode(params)}
+
+@api.get("/accounting/qbo/callback")
+async def qbo_callback(code: str = "", state: str = "", realmId: str = "", error: str = ""):
+    dest = f"{FRONTEND_URL}/dashboard/erp-sync"
+    if error or not code:
+        return RedirectResponse(f"{dest}?error=qbo")
+    try:
+        founder_id = await _consume_state(state, "qbo")
+        basic = base64.b64encode(f"{QBO_CLIENT_ID}:{QBO_CLIENT_SECRET}".encode()).decode()
+        async with httpx.AsyncClient(timeout=25) as c:
+            r = await c.post(QBO_TOKEN_URL, data={"grant_type": "authorization_code", "code": code, "redirect_uri": QBO_REDIRECT_URI},
+                             headers={"Authorization": "Basic " + basic, "Accept": "application/json"})
+        r.raise_for_status()
+        t = r.json()
+        await db.erp_connections.update_one({"founderId": founder_id, "provider": "qbo"}, {"$set": {
+            "founderId": founder_id, "provider": "qbo", "realm_id": realmId,
+            "access_token": _enc(t["access_token"]), "refresh_token": _enc(t["refresh_token"]),
+            "access_expires": (datetime.now(timezone.utc) + timedelta(seconds=t.get("expires_in", 3600))).isoformat(),
+            "connected_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+        await db.users.update_one({"user_id": founder_id}, {"$set": {"erpProvider": "QUICKBOOKS"}})
+        return RedirectResponse(f"{dest}?connected=qbo")
+    except Exception as e:
+        logger.error("QBO callback failed: %s", e)
+        return RedirectResponse(f"{dest}?error=qbo")
+
+@api.get("/accounting/xero/callback")
+async def xero_callback(code: str = "", state: str = "", error: str = ""):
+    dest = f"{FRONTEND_URL}/dashboard/erp-sync"
+    if error or not code:
+        return RedirectResponse(f"{dest}?error=xero")
+    try:
+        founder_id = await _consume_state(state, "xero")
+        basic = base64.b64encode(f"{XERO_CLIENT_ID}:{XERO_CLIENT_SECRET}".encode()).decode()
+        async with httpx.AsyncClient(timeout=25) as c:
+            r = await c.post(XERO_TOKEN_URL, data={"grant_type": "authorization_code", "code": code, "redirect_uri": XERO_REDIRECT_URI},
+                             headers={"Authorization": "Basic " + basic})
+            r.raise_for_status()
+            t = r.json()
+            conns = await c.get("https://api.xero.com/connections", headers={"Authorization": "Bearer " + t["access_token"]})
+            conns.raise_for_status()
+        tenants = conns.json()
+        tenant_id = tenants[0]["tenantId"] if tenants else ""
+        await db.erp_connections.update_one({"founderId": founder_id, "provider": "xero"}, {"$set": {
+            "founderId": founder_id, "provider": "xero", "tenant_id": tenant_id,
+            "access_token": _enc(t["access_token"]), "refresh_token": _enc(t["refresh_token"]),
+            "access_expires": (datetime.now(timezone.utc) + timedelta(seconds=t.get("expires_in", 1800))).isoformat(),
+            "connected_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+        await db.users.update_one({"user_id": founder_id}, {"$set": {"erpProvider": "XERO"}})
+        return RedirectResponse(f"{dest}?connected=xero")
+    except Exception as e:
+        logger.error("Xero callback failed: %s", e)
+        return RedirectResponse(f"{dest}?error=xero")
+
+@api.post("/accounting/{provider}/disconnect")
+async def accounting_disconnect(provider: str, founder: dict = Depends(get_current_founder)):
+    if provider not in ("qbo", "xero"):
+        raise HTTPException(status_code=400, detail="Unknown provider")
+    await db.erp_connections.delete_one({"founderId": founder["user_id"], "provider": provider})
+    return {"ok": True}
+
+# ---------------------------------------------------------------------------
+# Auto invoicing (platform cron) + CSV export
+# ---------------------------------------------------------------------------
+
+def _advance_date(iso_str: str, interval: str) -> datetime:
+    try:
+        base = datetime.fromisoformat(iso_str)
+    except Exception:
+        base = datetime.now(timezone.utc)
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    return base + timedelta(days=365 if interval == "YEARLY" else 30)
+
+async def bill_due_subscriptions() -> int:
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    due = await db.subscriptions.find({"status": "ACTIVE", "nextBillingDate": {"$lte": now_iso}}, {"_id": 0}).to_list(1000)
+    created = 0
+    for sub in due:
+        product = await db.products.find_one({"id": sub["productId"]}, {"_id": 0})
+        if not product:
+            continue
+        interval = product.get("billingInterval", "MONTHLY")
+        cur = sub["nextBillingDate"]
+        upd = {"status": "CANCELED"} if interval == "ONE_TIME" else {"nextBillingDate": _advance_date(cur, interval).isoformat()}
+        # Atomic guard: only one concurrent run can advance this cycle
+        res = await db.subscriptions.update_one(
+            {"id": sub["id"], "status": "ACTIVE", "nextBillingDate": cur}, {"$set": upd})
+        if res.modified_count != 1:
+            continue
+        doc = {"id": str(uuid.uuid4()), "founderId": sub["founderId"], "customerId": sub["customerId"],
+               "amountUsdc": round(float(product["priceUsdc"]), 2), "status": "PENDING",
+               "paymentNonce": "ls_" + secrets.token_urlsafe(10).replace("-", "").replace("_", "")[:14],
+               "onchainTxHash": None, "paidAt": None, "payerWallet": None, "productId": product["id"],
+               "description": f"{product['name']} — auto-billed", "erpInvoiceId": None,
+               "erpSyncStatus": "UNSYNCED", "erpSyncLog": None, "autoBilled": True, "subscriptionId": sub["id"],
+               "createdAt": now_iso, "updatedAt": now_iso}
+        await db.invoices.insert_one(doc)
+        created += 1
+    logger.info("Auto-billing: created %d invoices from %d due subscriptions", created, len(due))
+    return created
+
+@api.post("/cron/bill-subscriptions")
+async def cron_bill_subscriptions(request: Request, background_tasks: BackgroundTasks):
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else ""
+    if not WEBHOOK_CRON_SECRET or not hmac.compare_digest(token, WEBHOOK_CRON_SECRET):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    run_id = request.headers.get("X-Webhook-Id")
+    if run_id:
+        if await db.cron_runs.find_one({"run_id": run_id}):
+            return {"status": "duplicate"}
+        await db.cron_runs.insert_one({"run_id": run_id, "ts": datetime.now(timezone.utc).isoformat()})
+    background_tasks.add_task(bill_due_subscriptions)
+    return {"status": "accepted"}
+
+@api.get("/exports/payments.csv")
+async def export_payments_csv(founder: dict = Depends(get_current_founder)):
+    invoices = await db.invoices.find({"founderId": founder["user_id"]}, {"_id": 0}).sort("createdAt", -1).to_list(5000)
+    cust_cache = {}
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Invoice ID", "Created", "Customer", "Email", "Description", "Amount USDC",
+                     "Status", "Payment Nonce", "Onchain Tx", "Paid At", "Payer Wallet",
+                     "ERP Status", "ERP Invoice ID"])
+    for inv in invoices:
+        cid = inv["customerId"]
+        if cid not in cust_cache:
+            cust_cache[cid] = await db.customers.find_one({"id": cid}, {"_id": 0}) or {}
+        c = cust_cache[cid]
+        writer.writerow([inv["id"], inv.get("createdAt", ""), c.get("name", ""), c.get("email", ""),
+                         inv.get("description", ""), inv.get("amountUsdc", ""), inv.get("status", ""),
+                         inv.get("paymentNonce", ""), inv.get("onchainTxHash") or "", inv.get("paidAt") or "",
+                         inv.get("payerWallet") or "", inv.get("erpSyncStatus", ""), inv.get("erpInvoiceId") or ""])
+    return Response(content=buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=ledgersync-payments.csv"})
 
 app.include_router(api)
 
