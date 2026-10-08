@@ -1,0 +1,38 @@
+{
+  "summary": "Validated the four new LedgerSync features. Backend: 13/13 new pytest cases pass (cron auth 401, cron 200+accepted, duplicate X-Webhook-Id, CSV download w/ correct headers & rows, /accounting/status shape with configured:false, qbo/xero connect 400 'not configured', disconnect ok:true). Frontend: founder login works, Listener page shows pulsing LIVE indicator and live block height (updates after ~5-6s, started at '\u2014' then populated to 52,343,793), Invoices page export-csv-button triggers download of 'ledgersync-payments.csv', ERP Sync page shows QBO + Xero cards, both disabled 'Awaiting credentials' buttons, MOCK mode note, and sync-logs table has a 'Mode' column with MOCK rows. No console errors.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ERP Sync Engine", "issues": ["Status badge on the two connection cards shows 'CANCELED' when the server has no credentials configured. 'CANCELED' is misleading wording for a never-connected provider; a label like 'NOT CONFIGURED' or 'DISCONNECTED' would read better."]},
+      {"screen": "Onchain Listener", "issues": ["Initial block-height-display renders '\u2014' until first status fetch resolves (~1 cycle). Harmless but a skeleton/loading state would be nicer than an em-dash."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/test_ledgersync_backend.py",
+    "/app/test_reports/pytest/new_features.xml"
+  ],
+  "action_items": [
+    "(Optional) Rename 'CANCELED' badge on QBO/Xero cards when provider is unconfigured to 'NOT CONFIGURED' or 'DISCONNECTED' for clearer UX.",
+    "(Optional) Add a 1-tick loading placeholder for block-height-display instead of em-dash."
+  ],
+  "critical_code_review_comments": [
+    "cron_bill_subscriptions uses hmac.compare_digest for the secret and dedups via X-Webhook-Id — good. Runs the actual work in a BackgroundTask so the HTTP ack is immediate.",
+    "bill_due_subscriptions is race-safe: the subscription advance is an atomic conditional update on (id, status=ACTIVE, nextBillingDate=cur) so parallel cron runs can't double-bill.",
+    "export_payments_csv streams via StringIO Response with correct text/csv + Content-Disposition. For >5k invoices it could grow; consider StreamingResponse later.",
+    "run_erp_sync now writes mode='live'|'mock' on each erp_sync_logs row (new field) and gracefully falls back to mock when provider is set but keys/connection are absent.",
+    "/api/accounting/qbo/connect correctly returns 400 'QUICKBOOKS credentials are not configured on the server yet' when QBO_CLIENT_ID/SECRET are empty (same for Xero).",
+    "server.py is now 1200 lines — well past the 700-line guideline. Strongly recommend splitting into routers/ (auth, invoices, cron, erp, listener)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_new_features.py (new)"
+  ],
+  "success_rate": { "backend": "100% (13/13 new + 18/18 prior)", "frontend": "100% of new-feature flows" },
+  "test_credentials": "nexai.coach@gmail.com / LedgerSync2026! \u2014 valid, pre-seeded",
+  "seed_data_creation": "Cron run accepted a background bill job (no due subscriptions in the past so no new invoice created). A cron_runs doc was inserted for the dedup test. No stray business data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "New-feature tests at /app/backend/tests/test_new_features.py. Run with `pytest backend/tests/test_new_features.py -v -o addopts=''`. WEBHOOK_CRON_SECRET is set in backend/.env; QBO/Xero client keys are intentionally empty so only the 'not configured' / MOCK branch is exercised."
+}

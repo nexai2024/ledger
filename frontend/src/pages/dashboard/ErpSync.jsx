@@ -28,7 +28,11 @@ function ConnectionCard({ p, status, onConnect, onDisconnect }) {
           <Webhook className={`h-5 w-5 ${p.color}`} />
           <span className="font-heading font-bold">{p.name}</span>
         </div>
-        {s.connected ? <StatusBadge status="SYNCED" /> : <StatusBadge status={s.configured ? "UNSYNCED" : "CANCELED"} />}
+        {s.connected
+          ? <StatusBadge status="SYNCED" />
+          : s.configured
+            ? <StatusBadge status="UNSYNCED" />
+            : <span className="font-mono text-[11px] font-semibold tracking-wide px-2.5 py-0.5 rounded-full text-muted-foreground bg-muted border border-border">NOT CONFIGURED</span>}
       </div>
       <p className="mt-2 text-xs text-muted-foreground flex-1">
         {s.connected
